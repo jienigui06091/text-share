@@ -5,6 +5,7 @@
   "description": "A temporary, private text relay built for Cloudflare Workers.",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy",
     "check": "node --check src/index.js && node --check src/html.js"
   },

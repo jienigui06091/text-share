@@ -11,6 +11,24 @@ npm run dev
 
 打开终端显示的本地地址。Wrangler 的本地 Durable Objects 数据默认保存在 `.wrangler` 目录。
 
+## 局域网访问
+
+在运行项目的电脑上执行：
+
+```powershell
+npm run dev:lan
+```
+
+同一局域网内的其他设备可通过 `http://<这台电脑的 IPv4 地址>:8787` 访问，例如 `http://192.168.1.20:8787`。
+
+可用以下命令查看本机 IPv4 地址：
+
+```powershell
+ipconfig
+```
+
+首次访问失败时，请在 Windows 防火墙提示中允许 Node.js 在“专用网络”通信，或手动放行 TCP `8787` 入站端口。局域网模式仅适合受信任的内部网络；停止 `npm run dev:lan` 后，该地址将不再可访问。
+
 ## 部署到 Cloudflare
 
 ```powershell
