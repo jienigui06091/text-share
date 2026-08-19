@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
-    "deploy": "wrangler deploy",
     "check": "node --check src/index.js && node --check src/html.js"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "s3mini": "^1.0.0"
   }
 }

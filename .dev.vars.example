@@ -1,0 +1,8 @@
+# Cloudflare R2 S3-compatible API configuration.
+R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your-r2-access-key-id
+R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
+R2_REGION=auto
+R2_BUCKET=cfbucket
+R2_PUBLIC_BASE_URL=
+R2_PREFIX=images
