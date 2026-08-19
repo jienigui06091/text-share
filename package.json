@@ -1,0 +1,14 @@
+{
+  "name": "text-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A temporary, private text relay built for Cloudflare Workers.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/index.js && node --check src/html.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

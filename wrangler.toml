@@ -1,0 +1,11 @@
+name = "text-relay"
+main = "src/index.js"
+compatibility_date = "2026-08-18"
+
+[[durable_objects.bindings]]
+name = "CLIP_ROOM"
+class_name = "ClipRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ClipRoom"]
