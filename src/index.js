@@ -1,8 +1,7 @@
 import { page } from "./html.js";
 import { S3mini } from "s3mini";
 
-const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
-const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{16}$/;
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const MAX_FILES_PER_ROOM = 20;
@@ -14,7 +13,22 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/rooms" && request.method === "POST") {
-      const roomId = createId(24);
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "请求内容必须是 JSON" }, 400);
+      }
+
+      const roomId = body?.suffix === undefined || body.suffix === ""
+        ? createRoomId()
+        : typeof body.suffix === "string" && ROOM_ID_PATTERN.test(body.suffix)
+          ? body.suffix
+          : null;
+      if (!roomId) {
+        return json({ error: "房间后缀需为 3 至 32 位字母、数字、- 或 _" }, 400);
+      }
+
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
       const response = await room.fetch("https://room.internal/initialize", { method: "POST" });
       if (!response.ok) return withHeaders(response);
@@ -101,7 +115,7 @@ export class ClipRoom {
 
     if (url.pathname === "/initialize" && request.method === "POST") {
       const existing = await this.readActiveRoom();
-      if (existing) return json(publicRoom(existing));
+      if (existing) return json({ error: "该房间后缀已被占用，请换一个" }, 409);
 
       const room = {
         text: "",
