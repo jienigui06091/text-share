@@ -96,6 +96,10 @@ export const page = `<!doctype html>
     .icon-button:hover:not(:disabled) { background: #edf2f5; }
     .icon-button:disabled { opacity: .5; cursor: not-allowed; }
     .room-note { margin: 10px 0 26px; color: #657386; font-size: 13px; line-height: 1.55; }
+    .room-suffix { width: 100%; height: 38px; padding: 0 9px; border: 1px solid #c9d1da; border-radius: 5px; background: #fff; color: #18212b; }
+    .room-suffix:focus { border-color: #188c72; box-shadow: 0 0 0 3px rgb(24 140 114 / 14%); outline: none; }
+    .room-suffix-label { display: block; }
+    .suffix-note { margin: 7px 0 18px; color: #657386; font-size: 12px; line-height: 1.5; }
     .new-room { width: 100%; }
     .empty-state { color: #657386; font-size: 14px; line-height: 1.65; margin: 0 0 22px; }
     footer { padding: 18px 24px; border-top: 1px solid #dce2e8; color: #788596; font-size: 12px; text-align: center; }
@@ -140,6 +144,11 @@ export const page = `<!doctype html>
         </div>
         <p id="room-note" class="room-note">房间内的文本将在最后一次更新后的 24 小时自动删除。</p>
         <p id="empty-state" class="empty-state">创建一个临时房间，再将链接发送到另一台电脑。</p>
+        <div id="create-controls">
+          <label class="side-title room-suffix-label" for="room-suffix">房间后缀（可选）</label>
+          <input id="room-suffix" class="room-suffix" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]{3,32}" autocomplete="off" spellcheck="false" placeholder="例如：project-notes">
+          <p class="suffix-note">留空则自动生成；仅支持字母、数字、- 和 _。</p>
+        </div>
         <button id="new-room" class="button button-primary new-room" type="button">新建临时房间</button>
       </aside>
     </main>
@@ -149,7 +158,7 @@ export const page = `<!doctype html>
     (() => {
       const MAX_TEXT_LENGTH = 100000;
       const POLL_INTERVAL_MS = 2500;
-      const ROOM_PATTERN = /^\\/r\\/([A-Za-z0-9_-]{32})\\/?$/;
+      const ROOM_PATTERN = /^\\/r\\/([A-Za-z0-9_-]{3,32})\\/?$/;
       const elements = {
         editor: document.querySelector("#editor"),
         title: document.querySelector("#title"),
@@ -161,6 +170,8 @@ export const page = `<!doctype html>
         shareLink: document.querySelector("#share-link"),
         shareCopy: document.querySelector("#share-copy"),
         newRoom: document.querySelector("#new-room"),
+        createControls: document.querySelector("#create-controls"),
+        roomSuffix: document.querySelector("#room-suffix"),
         emptyState: document.querySelector("#empty-state"),
         roomNote: document.querySelector("#room-note")
       };
@@ -192,6 +203,7 @@ export const page = `<!doctype html>
         elements.copy.disabled = !active;
         elements.shareCopy.disabled = !active;
         elements.emptyState.hidden = active;
+        elements.createControls.hidden = active;
         elements.shareLink.value = active ? window.location.href : "创建房间后显示链接";
         elements.title.textContent = active ? "临时文本房间" : "临时文本房间";
       }
@@ -210,14 +222,26 @@ export const page = `<!doctype html>
       }
 
       async function createRoom() {
+        const suffix = elements.roomSuffix.value.trim();
+        if (suffix && !/^[A-Za-z0-9_-]{3,32}$/.test(suffix)) {
+          setStatus("后缀需为 3 至 32 位字母、数字、- 或 _");
+          elements.roomSuffix.focus();
+          return;
+        }
+
         elements.newRoom.disabled = true;
+        elements.roomSuffix.disabled = true;
         setStatus("正在创建房间...");
         try {
-          const room = await request("/api/rooms", { method: "POST" });
+          const room = await request("/api/rooms", {
+            method: "POST",
+            body: JSON.stringify({ suffix })
+          });
           window.location.assign("/r/" + room.roomId);
         } catch (error) {
           setStatus(error.message || "无法创建房间");
           elements.newRoom.disabled = false;
+          elements.roomSuffix.disabled = false;
         }
       }
 

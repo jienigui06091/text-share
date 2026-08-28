@@ -1,6 +1,6 @@
 import { page } from "./html.js";
 
-const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
 const MAX_TEXT_LENGTH = 100_000;
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -9,7 +9,22 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/rooms" && request.method === "POST") {
-      const roomId = createRoomId();
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "请求内容必须是 JSON" }, 400);
+      }
+
+      const roomId = body?.suffix === undefined || body.suffix === ""
+        ? createRoomId()
+        : typeof body.suffix === "string" && ROOM_ID_PATTERN.test(body.suffix)
+          ? body.suffix
+          : null;
+      if (!roomId) {
+        return json({ error: "房间后缀需为 3 至 32 位字母、数字、- 或 _" }, 400);
+      }
+
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
       const response = await room.fetch("https://room.internal/initialize", { method: "POST" });
       if (!response.ok) return withHeaders(response);
@@ -60,7 +75,7 @@ export class ClipRoom {
 
     if (url.pathname === "/initialize" && request.method === "POST") {
       const existing = await this.readActiveRoom();
-      if (existing) return json({ roomId: this.state.id.toString(), ...publicRoom(existing) });
+      if (existing) return json({ error: "该房间后缀已被占用，请换一个" }, 409);
 
       const room = {
         text: "",
