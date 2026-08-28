@@ -35,6 +35,23 @@ export default {
       return json({ roomId }, 201);
     }
 
+    const socketMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/ws$/);
+    if (socketMatch) {
+      const roomId = socketMatch[1];
+      if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+      if (
+        request.method !== "GET" ||
+        request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+      ) {
+        return json({ error: "需要 WebSocket 连接" }, 426);
+      }
+
+      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+      return room.fetch(new Request("https://room.internal/websocket", {
+        headers: request.headers
+      }));
+    }
+
     const collectionMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files$/);
     if (collectionMatch) {
       const roomId = collectionMatch[1];
@@ -62,8 +79,6 @@ export default {
       }
       if (!["GET", "DELETE"].includes(request.method)) {
         return json({ error: "不支持的请求方法" }, 405);
-      }
-
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
       return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}`, {
         method: request.method
@@ -128,8 +143,17 @@ export class ClipRoom {
       return json(publicRoom(room), 201);
     }
 
-    if (url.pathname === "/state") {
-      return this.handleState(request);
+    if (url.pathname === "/websocket" && request.method === "GET") {
+      const room = await this.readActiveRoom();
+      if (!room) return json({ error: "房间不存在或已过期" }, 404);
+
+      const [client, server] = Object.values(new WebSocketPair());
+      this.state.acceptWebSocket(server);
+      server.send(JSON.stringify({ type: "room", room: publicRoom(room) }));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (url.pathname === "/state") return this.handleState(request);
     }
 
     if (url.pathname === "/files" && request.method === "POST") {
@@ -168,11 +192,13 @@ export class ClipRoom {
 
       const updated = this.renewRoom({ ...room, text: body.text });
       await this.saveRoom(updated);
+      this.broadcast({ type: "room", room: publicRoom(updated) });
       return json(publicRoom(updated));
     }
 
     if (request.method === "DELETE") {
       await this.removeRoom(room);
+      this.notifyRoomClosed("Room deleted");
       return new Response(null, { status: 204 });
     }
 
@@ -218,6 +244,7 @@ export class ClipRoom {
       throw error;
     }
 
+    this.broadcast({ type: "room", room: publicRoom(updated) });
     return json(publicRoom(updated), 201);
   }
 
@@ -253,6 +280,7 @@ export class ClipRoom {
       files: room.files.filter((item) => item.id !== fileId)
     });
     await this.saveRoom(updated);
+    this.broadcast({ type: "room", room: publicRoom(updated) });
     return json(publicRoom(updated));
   }
 
@@ -262,6 +290,7 @@ export class ClipRoom {
 
     if (room.expiresAt <= Date.now()) {
       await this.removeRoom(normalizeRoom(room));
+      this.notifyRoomClosed("Room expired");
       return;
     }
 
@@ -279,6 +308,7 @@ export class ClipRoom {
     }
 
     await this.removeRoom(room);
+    this.notifyRoomClosed("Room expired");
     return null;
   }
 
@@ -297,6 +327,36 @@ export class ClipRoom {
   renewRoom(room) {
     const now = Date.now();
     return { ...room, updatedAt: now, expiresAt: now + ROOM_TTL_MS };
+  }
+
+  async webSocketMessage() {
+    // This channel only pushes updates from the Durable Object to clients.
+  }
+
+  async webSocketClose(socket, code, reason) {
+    socket.close(code, reason);
+  }
+
+  broadcast(message) {
+    const payload = JSON.stringify(message);
+    for (const socket of this.state.getWebSockets()) {
+      try {
+        socket.send(payload);
+      } catch {
+        socket.close(1011, "Unable to send update");
+      }
+    }
+  }
+
+  notifyRoomClosed(reason) {
+    this.broadcast({ type: "room-deleted" });
+    this.closeSockets(4004, reason);
+  }
+
+  closeSockets(code, reason) {
+    for (const socket of this.state.getWebSockets()) {
+      socket.close(code, reason);
+    }
   }
 }
 

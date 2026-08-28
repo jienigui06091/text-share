@@ -232,7 +232,6 @@ export const page = `<!doctype html>
       const MAX_FILE_SIZE = 100 * 1024 * 1024;
       const MAX_TOTAL_FILE_SIZE = 500 * 1024 * 1024;
       const MAX_FILES = 20;
-      const POLL_INTERVAL_MS = 2500;
       const ROOM_PATTERN = /^\\/r\\/([A-Za-z0-9_-]{3,32})\\/?$/;
       const elements = {
         editor: document.querySelector("#editor"),
@@ -258,7 +257,8 @@ export const page = `<!doctype html>
       let roomId = getRoomId();
       let lastUpdatedAt = 0;
       let saveTimer = null;
-      let pollTimer = null;
+      let socket = null;
+      let reconnectTimer = null;
       let hasLocalEdits = false;
       let files = [];
       let uploading = [];
@@ -355,7 +355,7 @@ export const page = `<!doctype html>
           setStatus("自动保存已开启", true);
         } catch (error) {
           if (error.message === "房间不存在或已过期") {
-            stopPolling();
+            disconnectRoom();
             setRoomUi(false);
             elements.roomNote.textContent = "该房间已过期或已被删除。请创建一个新的临时房间。";
           }
@@ -387,14 +387,63 @@ export const page = `<!doctype html>
         saveTimer = setTimeout(saveText, 700);
       }
 
-      function startPolling() {
-        stopPolling();
-        pollTimer = setInterval(() => loadRoom(true), POLL_INTERVAL_MS);
+      function connectRoom() {
+        if (!roomId || socket) return;
+
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const roomSocket = new WebSocket(
+          protocol + "//" + window.location.host + "/api/rooms/" + encodeURIComponent(roomId) + "/ws"
+        );
+        socket = roomSocket;
+
+        roomSocket.addEventListener("open", () => {
+          setStatus("\u5df2\u8fde\u63a5", true);
+        });
+        roomSocket.addEventListener("message", event => {
+          try {
+            const message = JSON.parse(event.data);
+            if (message.type === "room-deleted") {
+              expireRoom();
+              return;
+            }
+            if (message.type === "room" && message.room) {
+              applyRoom(message.room);
+            }
+          } catch {
+            setStatus("\u6536\u5230\u65e0\u6548\u66f4\u65b0");
+          }
+        });
+        roomSocket.addEventListener("close", event => {
+          if (socket === roomSocket) socket = null;
+          if (event.code === 4004) {
+            expireRoom();
+            return;
+          }
+          if (!roomId) return;
+          setStatus("\u8fde\u63a5\u4e2d\u65ad\u6b63\u5728\u91cd\u8fde");
+          reconnectTimer = setTimeout(connectRoom, 2000);
+        });
+        roomSocket.addEventListener("error", () => {
+          setStatus("\u8fde\u63a5\u5931\u8d25");
+        });
       }
 
-      function stopPolling() {
-        if (pollTimer) window.clearInterval(pollTimer);
-        pollTimer = null;
+      function expireRoom() {
+        disconnectRoom();
+        setRoomUi(false);
+        elements.roomNote.textContent = "\u8be5\u623f\u95f4\u5df2\u8fc7\u671f\u6216\u5df2\u88ab\u5220\u9664\u3002\u8bf7\u521b\u5efa\u4e00\u4e2a\u65b0\u7684\u4e34\u65f6\u623f\u95f4\u3002";
+        setStatus("\u623f\u95f4\u5df2\u8fc7\u671f");
+      }
+
+      function disconnectRoom() {
+        roomId = null;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (socket) {
+          const roomSocket = socket;
+          socket = null;
+          roomSocket.close();
+        }
       }
 
       function renderFiles() {
@@ -611,7 +660,7 @@ export const page = `<!doctype html>
       renderFiles();
       if (roomId) {
         loadRoom();
-        startPolling();
+        connectRoom();
       }
     })();
   </script>
