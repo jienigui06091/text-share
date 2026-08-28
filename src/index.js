@@ -31,6 +31,25 @@ export default {
       return json({ roomId }, 201);
     }
 
+    const socketMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/ws$/);
+    if (socketMatch) {
+      const roomId = socketMatch[1];
+      if (!ROOM_ID_PATTERN.test(roomId)) {
+        return json({ error: "Invalid room address" }, 400);
+      }
+      if (
+        request.method !== "GET" ||
+        request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+      ) {
+        return json({ error: "WebSocket connection required" }, 426);
+      }
+
+      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+      return room.fetch(new Request("https://room.internal/websocket", {
+        headers: request.headers
+      }));
+    }
+
     const match = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)$/);
     if (match) {
       const roomId = match[1];
@@ -87,6 +106,16 @@ export class ClipRoom {
       return json(publicRoom(room), 201);
     }
 
+    if (url.pathname === "/websocket" && request.method === "GET") {
+      const room = await this.readActiveRoom();
+      if (!room) return json({ error: "Room not found or expired" }, 404);
+
+      const [client, server] = Object.values(new WebSocketPair());
+      this.state.acceptWebSocket(server);
+      server.send(JSON.stringify({ type: "room", room: publicRoom(room) }));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     if (url.pathname !== "/state") {
       return json({ error: "未找到资源" }, 404);
     }
@@ -121,11 +150,13 @@ export class ClipRoom {
       };
       await this.state.storage.put("room", updated);
       await this.state.storage.setAlarm(updated.expiresAt);
+      this.broadcast({ type: "room", room: publicRoom(updated) });
       return json(publicRoom(updated));
     }
 
     if (request.method === "DELETE") {
       await this.state.storage.deleteAll();
+      this.notifyRoomClosed("Room deleted");
       return new Response(null, { status: 204 });
     }
 
@@ -138,6 +169,7 @@ export class ClipRoom {
 
     if (room.expiresAt <= Date.now()) {
       await this.state.storage.deleteAll();
+      this.notifyRoomClosed("Room expired");
       return;
     }
 
@@ -150,7 +182,38 @@ export class ClipRoom {
     if (room.expiresAt > Date.now()) return room;
 
     await this.state.storage.deleteAll();
+    this.notifyRoomClosed("Room expired");
     return null;
+  }
+
+  async webSocketMessage() {
+    // This channel only pushes updates from the Durable Object to clients.
+  }
+
+  async webSocketClose(socket, code, reason) {
+    socket.close(code, reason);
+  }
+
+  broadcast(message) {
+    const payload = JSON.stringify(message);
+    for (const socket of this.state.getWebSockets()) {
+      try {
+        socket.send(payload);
+      } catch {
+        socket.close(1011, "Unable to send update");
+      }
+    }
+  }
+
+  notifyRoomClosed(reason) {
+    this.broadcast({ type: "room-deleted" });
+    this.closeSockets(4004, reason);
+  }
+
+  closeSockets(code, reason) {
+    for (const socket of this.state.getWebSockets()) {
+      socket.close(code, reason);
+    }
   }
 }
 
