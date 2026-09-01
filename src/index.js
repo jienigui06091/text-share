@@ -22,7 +22,7 @@ export default {
       }
 
       const roomId = body?.suffix === undefined || body.suffix === ""
-        ? createRoomId()
+        ? createId(24)
         : typeof body.suffix === "string" && ROOM_ID_PATTERN.test(body.suffix)
           ? body.suffix
           : null;
