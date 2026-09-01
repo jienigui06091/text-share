@@ -1,7 +1,8 @@
-import { page } from "./html.js";
+import { renderPage } from "./html.js";
 import { S3mini } from "s3mini";
 
 const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
+const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{16}$/;
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const MAX_FILES_PER_ROOM = 20;
@@ -79,6 +80,7 @@ export default {
       }
       if (!["GET", "DELETE"].includes(request.method)) {
         return json({ error: "不支持的请求方法" }, 405);
+      }
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
       return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}`, {
         method: request.method
@@ -103,11 +105,14 @@ export default {
     }
 
     if (request.method === "GET") {
-      return new Response(page, {
+      const fileBaseUrl = publicFileBaseUrl(env);
+      const fileOrigin = fileBaseUrl ? new URL(fileBaseUrl).origin : "";
+      const fileSource = fileOrigin ? ` ${fileOrigin}` : "";
+      return new Response(renderPage(fileBaseUrl), {
         headers: {
           "Content-Type": "text/html; charset=UTF-8",
           "Cache-Control": "no-store",
-          "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+          "Content-Security-Policy": `default-src 'self'; connect-src 'self'; img-src 'self' blob:${fileSource}; media-src 'self' blob:${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
           "X-Content-Type-Options": "nosniff",
           "Referrer-Policy": "no-referrer"
         }
@@ -154,7 +159,6 @@ export class ClipRoom {
     }
 
     if (url.pathname === "/state") return this.handleState(request);
-    }
 
     if (url.pathname === "/files" && request.method === "POST") {
       return this.uploadFile(request);
@@ -225,14 +229,16 @@ export class ClipRoom {
       return json({ error: "文件大小超出房间限制" }, 413);
     }
 
+    const fileId = createId(12);
     const file = {
-      id: createId(12),
+      id: fileId,
       name,
       size: contentLength,
       type: normalizeContentType(request.headers.get("content-type")),
-      uploadedAt: Date.now()
+      uploadedAt: Date.now(),
+      objectPath: fileObjectPath(fileId, name)
     };
-    const key = objectKey(this.env, file.id);
+    const key = objectKey(this.env, file);
 
     await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
 
@@ -255,7 +261,7 @@ export class ClipRoom {
     const file = room.files.find((item) => item.id === fileId);
     if (!file) return json({ error: "文件不存在或已删除" }, 404);
 
-    const object = await this.files.getObjectResponse(objectKey(this.env, file.id));
+    const object = await this.files.getObjectResponse(objectKey(this.env, file));
     if (!object) return json({ error: "文件不存在或已删除" }, 404);
 
     const headers = new Headers({
@@ -274,7 +280,7 @@ export class ClipRoom {
     const file = room.files.find((item) => item.id === fileId);
     if (!file) return json({ error: "文件不存在或已删除" }, 404);
 
-    await this.files.deleteObject(objectKey(this.env, file.id));
+    await this.files.deleteObject(objectKey(this.env, file));
     const updated = this.renewRoom({
       ...room,
       files: room.files.filter((item) => item.id !== fileId)
@@ -319,7 +325,7 @@ export class ClipRoom {
 
   async removeRoom(room) {
     if (room.files.length) {
-      await this.files.deleteObjects(room.files.map((file) => objectKey(this.env, file.id)));
+      await this.files.deleteObjects(room.files.map((file) => objectKey(this.env, file)));
     }
     await this.state.storage.deleteAll();
   }
@@ -390,9 +396,32 @@ function requiredConfig(env, name) {
   return value.trim();
 }
 
-function objectKey(env, fileId) {
+function objectKey(env, file) {
   const prefix = typeof env.R2_PREFIX === "string" ? env.R2_PREFIX.trim().replace(/^\/+|\/+$/g, "") : "";
-  return prefix ? `${prefix}/files/${fileId}` : `files/${fileId}`;
+  const path = typeof file === "object" && file.objectPath
+    ? file.objectPath
+    : `files/${typeof file === "object" ? file.id : file}`;
+  return prefix ? `${prefix}/${path}` : path;
+}
+
+function fileObjectPath(fileId, name) {
+  return `files/${fileId}-${name.replace(/[\\/]/g, "_")}`;
+}
+
+function publicFileBaseUrl(env) {
+  const value = env.R2_PUBLIC_BASE_URL;
+  if (typeof value !== "string" || !value.trim()) return "";
+
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    url.search = "";
+    url.hash = "";
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
 }
 
 function normalizeRoom(room) {
@@ -432,7 +461,14 @@ function publicRoom(room) {
     text: room.text,
     updatedAt: room.updatedAt,
     expiresAt: room.expiresAt,
-    files: room.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt }))
+    files: room.files.map(({ id, name, size, type, uploadedAt, objectPath }) => ({
+      id,
+      name,
+      size,
+      type,
+      uploadedAt,
+      objectPath
+    }))
   };
 }
 

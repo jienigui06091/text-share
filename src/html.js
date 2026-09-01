@@ -1,4 +1,9 @@
-export const page = `<!doctype html>
+export function renderPage(fileBaseUrl = "") {
+  const serializedFileBaseUrl = JSON.stringify(fileBaseUrl).replace(/</g, "\\u003c");
+  return page.replace("__PUBLIC_FILE_BASE_URL__", serializedFileBaseUrl);
+}
+
+const page = `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -262,6 +267,7 @@ export const page = `<!doctype html>
       let hasLocalEdits = false;
       let files = [];
       let uploading = [];
+      const PUBLIC_FILE_BASE_URL = __PUBLIC_FILE_BASE_URL__;
 
       function getRoomId() {
         const match = window.location.pathname.match(ROOM_PATTERN);
@@ -269,6 +275,12 @@ export const page = `<!doctype html>
       }
 
       function fileUrl(file) {
+        if (PUBLIC_FILE_BASE_URL && file.objectPath) {
+          return PUBLIC_FILE_BASE_URL + "/" + file.objectPath
+            .split("/")
+            .map((segment) => encodeURIComponent(segment))
+            .join("/");
+        }
         return "/api/rooms/" + roomId + "/files/" + file.id;
       }
 
