@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      s3mini:
+        specifier: ^1.0.0
+        version: 1.0.0
     devDependencies:
       wrangler:
         specifier: ^4.0.0
@@ -446,6 +450,10 @@ packages:
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
+  s3mini@1.0.0:
+    resolution: {integrity: sha512-/lMtusIFZzpX5T0sti3aMxDD5gTcPRBSUWMP6q2hrx+NeDSJVUgzF4shoF1e2JOklx2C5xbsO70fgYZko0vsZw==}
+    engines: {node: '>=20'}
+
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
@@ -802,6 +810,8 @@ snapshots:
   path-to-regexp@6.3.0: {}
 
   pathe@2.0.3: {}
+
+  s3mini@1.0.0: {}
 
   semver@7.8.5: {}
 

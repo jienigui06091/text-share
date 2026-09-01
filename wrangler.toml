@@ -2,6 +2,9 @@ name = "text-relay"
 main = "src/index.js"
 compatibility_date = "2026-08-18"
 
+[vars]
+R2_PUBLIC_BASE_URL = "https://miaowazz.cc.cd/text-share"
+
 [[durable_objects.bindings]]
 name = "CLIP_ROOM"
 class_name = "ClipRoom"
