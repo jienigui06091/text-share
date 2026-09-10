@@ -1,6 +1,6 @@
 # Text Relay
 
-临时文本与文件中转站。创建房间后，把链接发送到另一台电脑或手机；文本与文件会自动保存，并在最后一次更新后的 24 小时删除。
+临时文本与文件中转站。创建房间后，把链接发送到另一台电脑或手机；文本会在最后一次更新后的 24 小时删除，上传至 R2 的文件会保留。
 
 支持多文件上传，包括图片、文档、压缩包和视频等常见格式。图片和视频可在浏览器中预览，其他文件可直接下载。
 
@@ -52,7 +52,7 @@ R2_BUCKET=cfbucket
 R2_PREFIX=images
 ```
 
-`R2_PUBLIC_BASE_URL` 是文件公开访问基址，例如 `https://miaowazz.cc.cd/text-share`。配置后，文件预览和下载会直连 `${R2_PUBLIC_BASE_URL}/files/<随机 ID>-<原文件名>`；该前缀中的文件必须允许公开读取。未配置时，本地运行会回退到应用接口代理下载。
+`R2_PUBLIC_BASE_URL` 是文件公开访问基址，例如 `https://miaowazz.cc.cd/text-share`。配置后，文件会按房间名保存到 `${R2_PREFIX}/files/<房间名>/<随机 ID>-<原文件名>`；预览和下载会访问对应的 `${R2_PUBLIC_BASE_URL}/files/<房间名>/<随机 ID>-<原文件名>`。该前缀中的文件必须允许公开读取。未配置时，本地运行会回退到应用接口代理下载。
 
 `.dev.vars` 已加入 `.gitignore`，不会提交到 Git。无需执行 `wrangler login`，也无需执行 `wrangler deploy`；`wrangler dev` 会在本机运行，并用 S3 兼容 API 直接连接 R2。
 

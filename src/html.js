@@ -130,6 +130,63 @@ const page = `<!doctype html>
     .file-link:hover, .file-remove:hover:not(:disabled) { background: #edf2f5; }
     .file-remove { color: #a5382d; border-color: #dfb4af; }
     .file-remove:hover:not(:disabled) { background: #fff0ef; }
+    .preview-dialog {
+      width: min(980px, calc(100vw - 32px));
+      max-width: none;
+      height: min(780px, calc(100vh - 32px));
+      padding: 0;
+      border: 1px solid #aeb9c5;
+      border-radius: 6px;
+      background: #fff;
+      color: #18212b;
+      box-shadow: 0 20px 54px rgb(24 33 43 / 28%);
+    }
+    .preview-dialog::backdrop { background: rgb(18 23 29 / 58%); }
+    .preview-header {
+      min-height: 55px;
+      padding: 10px 14px 10px 18px;
+      border-bottom: 1px solid #dce2e8;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .preview-title {
+      min-width: 0;
+      flex: 1 1 auto;
+      font-size: 14px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .preview-body {
+      height: calc(100% - 55px);
+      padding: 18px;
+      display: grid;
+      place-items: center;
+      overflow: auto;
+      background: #f4f6f8;
+    }
+    .preview-image, .preview-video {
+      display: block;
+      width: auto;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .preview-audio { width: min(560px, 100%); }
+    .preview-pdf { width: 100%; height: 100%; border: 0; background: #fff; }
+    .preview-text {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid #c9d1da;
+      background: #fff;
+      color: #18212b;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .preview-message { max-width: 480px; margin: 0; color: #526173; line-height: 1.6; text-align: center; }
     aside { border-left: 1px solid #d5dbe2; padding-left: 32px; }
     .side-title { margin: 0 0 9px; font-size: 14px; color: #455466; }
     .share-row { display: flex; gap: 7px; }
@@ -222,7 +279,7 @@ const page = `<!doctype html>
         <p id="room-note" class="room-note">房间内的文本将在最后一次更新后的 24 小时自动删除。</p>
         <p id="empty-state" class="empty-state">创建一个临时房间，再将链接发送到另一台电脑。</p>
         <div id="create-controls">
-          <label class="side-title room-suffix-label" for="room-suffix">房间后缀（可选）</label>
+          <label class="side-title room-suffix-label" for="room-suffix">新房间链接后缀（可选）</label>
           <input id="room-suffix" class="room-suffix" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]{3,32}" autocomplete="off" spellcheck="false" placeholder="例如：project-notes">
           <p class="suffix-note">留空则自动生成；仅支持字母、数字、- 和 _。</p>
         </div>
@@ -231,12 +288,20 @@ const page = `<!doctype html>
     </main>
     <footer>文本以纯文本形式保存。房间链接相当于访问凭证，请勿在公开场合泄露。</footer>
   </div>
+  <dialog id="file-preview-dialog" class="preview-dialog" aria-labelledby="file-preview-title">
+    <div class="preview-header">
+      <div id="file-preview-title" class="preview-title"></div>
+      <button id="file-preview-close" class="icon-button" type="button" title="\u5173\u95ed\u9884\u89c8" aria-label="\u5173\u95ed\u9884\u89c8">&times;</button>
+    </div>
+    <div id="file-preview-body" class="preview-body"></div>
+  </dialog>
   <script>
     (() => {
       const MAX_TEXT_LENGTH = 100000;
       const MAX_FILE_SIZE = 100 * 1024 * 1024;
       const MAX_TOTAL_FILE_SIZE = 500 * 1024 * 1024;
       const MAX_FILES = 20;
+      const MAX_TEXT_PREVIEW_SIZE = 2 * 1024 * 1024;
       const ROOM_PATTERN = /^\\/r\\/([A-Za-z0-9_-]{3,32})\\/?$/;
       const elements = {
         editor: document.querySelector("#editor"),
@@ -256,7 +321,11 @@ const page = `<!doctype html>
         fileInput: document.querySelector("#file-input"),
         fileDropzone: document.querySelector("#file-dropzone"),
         fileList: document.querySelector("#file-list"),
-        fileCount: document.querySelector("#file-count")
+        fileCount: document.querySelector("#file-count"),
+        previewDialog: document.querySelector("#file-preview-dialog"),
+        previewTitle: document.querySelector("#file-preview-title"),
+        previewBody: document.querySelector("#file-preview-body"),
+        previewClose: document.querySelector("#file-preview-close")
       };
 
       let roomId = getRoomId();
@@ -284,6 +353,15 @@ const page = `<!doctype html>
         return "/api/rooms/" + roomId + "/files/" + file.id;
       }
 
+      function previewUrl(file) {
+        if (!isTextPreviewable(file)) return fileUrl(file);
+        return "/api/rooms/" + roomId + "/files/" + file.id;
+      }
+
+      function downloadUrl(file) {
+        return "/api/rooms/" + roomId + "/files/" + file.id + "?download=1";
+      }
+
       function setStatus(message, isOnline = false) {
         elements.status.textContent = message;
         elements.connection.textContent = isOnline ? "已连接" : "未连接";
@@ -306,7 +384,7 @@ const page = `<!doctype html>
         elements.fileInput.disabled = !active;
         elements.fileDropzone.classList.toggle("disabled", !active);
         elements.emptyState.hidden = active;
-        elements.createControls.hidden = active;
+        elements.createControls.hidden = false;
         elements.shareLink.value = active ? window.location.href : "创建房间后显示链接";
       }
 
@@ -488,13 +566,20 @@ const page = `<!doctype html>
           const actions = document.createElement("div");
           actions.className = "file-actions";
           if (!file.uploading) {
-            const open = document.createElement("a");
-            open.className = "file-link";
-            open.href = fileUrl(file);
-            open.target = "_blank";
-            open.rel = "noopener";
-            open.textContent = isPreviewable(file) ? "预览" : "下载";
-            actions.append(open);
+            if (isPreviewable(file)) {
+              const preview = document.createElement("button");
+              preview.className = "file-link";
+              preview.type = "button";
+              preview.textContent = "\u9884\u89c8";
+              preview.addEventListener("click", () => previewFile(file));
+              actions.append(preview);
+            }
+
+            const download = document.createElement("a");
+            download.className = "file-link";
+            download.href = downloadUrl(file);
+            download.textContent = "\u4e0b\u8f7d";
+            actions.append(download);
 
             const remove = document.createElement("button");
             remove.className = "file-remove";
@@ -529,6 +614,81 @@ const page = `<!doctype html>
         type.className = "file-type";
         type.textContent = extensionOf(file.name);
         return type;
+      }
+
+      async function previewFile(file) {
+        elements.previewTitle.textContent = file.name;
+        elements.previewBody.replaceChildren();
+        elements.previewDialog.showModal();
+
+        if (isTextPreviewable(file)) {
+          if (file.size > MAX_TEXT_PREVIEW_SIZE) {
+            showPreviewMessage("\u6587\u672c\u6587\u4ef6\u8d85\u8fc7 2 MiB\uff0c\u4e3a\u907f\u514d\u6d4f\u89c8\u5668\u5361\u987f\u672a\u6253\u5f00\u9884\u89c8\u3002");
+            return;
+          }
+          showPreviewMessage("\u6b63\u5728\u8bfb\u53d6\u6587\u4ef6...");
+          try {
+            const response = await fetch(previewUrl(file), { cache: "no-store" });
+            if (!response.ok) throw new Error("\u6587\u4ef6\u8bfb\u53d6\u5931\u8d25");
+            const text = await response.text();
+            const preview = document.createElement("pre");
+            preview.className = "preview-text";
+            preview.textContent = text;
+            elements.previewBody.replaceChildren(preview);
+          } catch (error) {
+            showPreviewMessage(error.message || "\u6587\u4ef6\u8bfb\u53d6\u5931\u8d25");
+          }
+          return;
+        }
+
+        if (file.type === "application/pdf") {
+          const pdf = document.createElement("iframe");
+          pdf.className = "preview-pdf";
+          pdf.src = previewUrl(file);
+          pdf.title = file.name;
+          elements.previewBody.append(pdf);
+          return;
+        }
+
+        if (file.type.startsWith("image/")) {
+          const image = document.createElement("img");
+          image.className = "preview-image";
+          image.src = previewUrl(file);
+          image.alt = file.name;
+          elements.previewBody.append(image);
+          return;
+        }
+
+        if (file.type.startsWith("video/")) {
+          const video = document.createElement("video");
+          video.className = "preview-video";
+          video.src = previewUrl(file);
+          video.controls = true;
+          video.preload = "metadata";
+          elements.previewBody.append(video);
+          return;
+        }
+
+        if (file.type.startsWith("audio/")) {
+          const audio = document.createElement("audio");
+          audio.className = "preview-audio";
+          audio.src = previewUrl(file);
+          audio.controls = true;
+          audio.preload = "metadata";
+          elements.previewBody.append(audio);
+        }
+      }
+
+      function showPreviewMessage(message) {
+        const text = document.createElement("p");
+        text.className = "preview-message";
+        text.textContent = message;
+        elements.previewBody.replaceChildren(text);
+      }
+
+      function closePreview() {
+        if (elements.previewDialog.open) elements.previewDialog.close();
+        elements.previewBody.replaceChildren();
       }
 
       async function selectFiles(selected) {
@@ -594,7 +754,21 @@ const page = `<!doctype html>
       }
 
       function isPreviewable(file) {
-        return ["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(file.type) || file.type.startsWith("video/");
+        return isInlinePreviewable(file) || isTextPreviewable(file);
+      }
+
+      function isInlinePreviewable(file) {
+        return ["application/pdf", "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(file.type)
+          || file.type.startsWith("audio/")
+          || file.type.startsWith("video/");
+      }
+
+      function isTextPreviewable(file) {
+        return file.type.startsWith("text/")
+          || file.type === "application/json"
+          || file.type === "application/xml"
+          || file.type.endsWith("+json")
+          || ["application/x-yaml", "application/yaml"].includes(file.type);
       }
 
       function extensionOf(name) {
@@ -645,6 +819,11 @@ const page = `<!doctype html>
       });
       elements.copy.addEventListener("click", () => copyText(elements.editor.value, "文本已复制"));
       elements.shareCopy.addEventListener("click", () => copyText(window.location.href, "链接已复制"));
+      elements.previewClose.addEventListener("click", closePreview);
+      elements.previewDialog.addEventListener("close", () => elements.previewBody.replaceChildren());
+      document.addEventListener("keydown", event => {
+        if (event.key === "Escape") closePreview();
+      });
       elements.fileInput.addEventListener("change", () => {
         selectFiles([...elements.fileInput.files]);
         elements.fileInput.value = "";

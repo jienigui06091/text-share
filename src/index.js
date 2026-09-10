@@ -63,9 +63,11 @@ export default {
 
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
       const upload = fixedLengthBody(request.body, contentLength);
+      const headers = uploadHeaders(request.headers, contentLength);
+      headers.set("X-Clip-Room-Id", roomId);
       const response = await room.fetch(new Request(`https://room.internal/files${url.search}`, {
         method: "POST",
-        headers: uploadHeaders(request.headers, contentLength),
+        headers,
         body: upload.body
       }));
       if (response.ok) await upload.finished;
@@ -82,7 +84,7 @@ export default {
         return json({ error: "不支持的请求方法" }, 405);
       }
       const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}`, {
+      return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}${url.search}`, {
         method: request.method
       })));
     }
@@ -112,7 +114,7 @@ export default {
         headers: {
           "Content-Type": "text/html; charset=UTF-8",
           "Cache-Control": "no-store",
-          "Content-Security-Policy": `default-src 'self'; connect-src 'self'; img-src 'self' blob:${fileSource}; media-src 'self' blob:${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
+          "Content-Security-Policy": `default-src 'self'; connect-src 'self'; img-src 'self' blob:${fileSource}; media-src 'self' blob:${fileSource}; frame-src 'self'${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
           "X-Content-Type-Options": "nosniff",
           "Referrer-Policy": "no-referrer"
         }
@@ -166,7 +168,9 @@ export class ClipRoom {
 
     const fileMatch = url.pathname.match(/^\/files\/([A-Za-z0-9_-]+)$/);
     if (fileMatch && FILE_ID_PATTERN.test(fileMatch[1])) {
-      if (request.method === "GET") return this.downloadFile(fileMatch[1]);
+      if (request.method === "GET") {
+        return this.downloadFile(fileMatch[1], url.searchParams.get("download") === "1");
+      }
       if (request.method === "DELETE") return this.deleteFile(fileMatch[1]);
     }
 
@@ -213,6 +217,11 @@ export class ClipRoom {
     const room = await this.readActiveRoom();
     if (!room) return json({ error: "房间不存在或已过期" }, 404);
 
+    const roomId = request.headers.get("X-Clip-Room-Id");
+    if (!roomId || !ROOM_ID_PATTERN.test(roomId)) {
+      return json({ error: "无效的房间地址" }, 400);
+    }
+
     const name = readFileName(new URL(request.url).searchParams.get("name"));
     if (!name) return json({ error: "文件名无效" }, 400);
     if (room.files.length >= MAX_FILES_PER_ROOM) {
@@ -236,25 +245,20 @@ export class ClipRoom {
       size: contentLength,
       type: normalizeContentType(request.headers.get("content-type")),
       uploadedAt: Date.now(),
-      objectPath: fileObjectPath(fileId, name)
+      objectPath: fileObjectPath(roomId, fileId, name)
     };
     const key = objectKey(this.env, file);
 
     await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
 
     const updated = this.renewRoom({ ...room, files: [...room.files, file] });
-    try {
-      await this.saveRoom(updated);
-    } catch (error) {
-      await this.files.deleteObject(key);
-      throw error;
-    }
+    await this.saveRoom(updated);
 
     this.broadcast({ type: "room", room: publicRoom(updated) });
     return json(publicRoom(updated), 201);
   }
 
-  async downloadFile(fileId) {
+  async downloadFile(fileId, download = false) {
     const room = await this.readActiveRoom();
     if (!room) return json({ error: "房间不存在或已过期" }, 404);
 
@@ -267,7 +271,7 @@ export class ClipRoom {
     const headers = new Headers({
       "Content-Type": file.type,
       "Content-Length": String(file.size),
-      "Content-Disposition": contentDisposition(file),
+      "Content-Disposition": contentDisposition(file, download),
       "Cache-Control": "no-store"
     });
     return new Response(object.body, { headers });
@@ -280,7 +284,6 @@ export class ClipRoom {
     const file = room.files.find((item) => item.id === fileId);
     if (!file) return json({ error: "文件不存在或已删除" }, 404);
 
-    await this.files.deleteObject(objectKey(this.env, file));
     const updated = this.renewRoom({
       ...room,
       files: room.files.filter((item) => item.id !== fileId)
@@ -324,9 +327,6 @@ export class ClipRoom {
   }
 
   async removeRoom(room) {
-    if (room.files.length) {
-      await this.files.deleteObjects(room.files.map((file) => objectKey(this.env, file)));
-    }
     await this.state.storage.deleteAll();
   }
 
@@ -404,8 +404,8 @@ function objectKey(env, file) {
   return prefix ? `${prefix}/${path}` : path;
 }
 
-function fileObjectPath(fileId, name) {
-  return `files/${fileId}-${name.replace(/[\\/]/g, "_")}`;
+function fileObjectPath(roomId, fileId, name) {
+  return `files/${roomId}/${fileId}-${name.replace(/[\\/]/g, "_")}`;
 }
 
 function publicFileBaseUrl(env) {
@@ -472,13 +472,15 @@ function publicRoom(room) {
   };
 }
 
-function contentDisposition(file) {
-  const inline = isPreviewableType(file.type);
+function contentDisposition(file, download = false) {
+  const inline = !download && isInlinePreviewableType(file.type);
   return `${inline ? "inline" : "attachment"}; filename="download"; filename*=UTF-8''${encodeURIComponent(file.name)}`;
 }
 
-function isPreviewableType(type) {
-  return ["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(type) || type.startsWith("video/");
+function isInlinePreviewableType(type) {
+  return ["application/pdf", "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(type)
+    || type.startsWith("audio/")
+    || type.startsWith("video/");
 }
 
 function uploadHeaders(headers, contentLength) {
