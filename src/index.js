@@ -4,126 +4,179 @@ import { S3mini } from "s3mini";
 const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
 const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{16}$/;
 const MAX_TEXT_LENGTH = 100_000;
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
-const MAX_FILES_PER_ROOM = 20;
-const MAX_TOTAL_FILE_SIZE = 500 * 1024 * 1024;
+const MAX_FILE_SIZE = 1024 * 1024 * 1024;
+const MAX_FILES_PER_ROOM = 30;
+const MAX_TOTAL_FILE_SIZE = 2048 * 1024 * 1024;
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
+
+const KNOWN_MIME_TYPES = {
+  apk: "application/vnd.android.package-archive",
+  ipa: "application/octet-stream",
+  zip: "application/zip",
+  rar: "application/x-rar-compressed",
+  "7z": "application/x-7z-compressed",
+  tar: "application/x-tar",
+  gz: "application/gzip",
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  mov: "video/quicktime",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  m4a: "audio/mp4",
+  flac: "audio/flac",
+  txt: "text/plain; charset=UTF-8",
+  md: "text/markdown; charset=UTF-8",
+  json: "application/json",
+  xml: "application/xml",
+  js: "text/javascript",
+  html: "text/html",
+  css: "text/css"
+};
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/api/rooms" && request.method === "POST") {
-      let body = {};
-      try {
-        body = await request.json();
-      } catch {
-        return json({ error: "请求内容必须是 JSON" }, 400);
+    try {
+      return await handleRequest(request, env);
+    } catch (err) {
+      if (isConnectionLostError(err)) {
+        return new Response(null, { status: 499 });
       }
+      console.error("[Worker Error]", err);
+      return json({ error: "服务处理异常: " + (err?.message || "未知错误") }, 500);
+    }
+  }
+};
 
-      const roomId = body?.suffix === undefined || body.suffix === ""
-        ? createId(24)
-        : typeof body.suffix === "string" && ROOM_ID_PATTERN.test(body.suffix)
-          ? body.suffix
-          : null;
-      if (!roomId) {
-        return json({ error: "房间后缀需为 3 至 32 位字母、数字、- 或 _" }, 400);
-      }
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
 
-      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      const response = await room.fetch("https://room.internal/initialize", { method: "POST" });
-      if (!response.ok) return withHeaders(response);
-      return json({ roomId }, 201);
+  if (url.pathname === "/api/rooms" && request.method === "POST") {
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "请求内容必须是 JSON" }, 400);
     }
 
-    const socketMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/ws$/);
-    if (socketMatch) {
-      const roomId = socketMatch[1];
-      if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
-      if (
-        request.method !== "GET" ||
-        request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
-      ) {
-        return json({ error: "需要 WebSocket 连接" }, 426);
-      }
-
-      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      return room.fetch(new Request("https://room.internal/websocket", {
-        headers: request.headers
-      }));
+    const roomId = body?.suffix === undefined || body.suffix === ""
+      ? createId(24)
+      : typeof body.suffix === "string" && ROOM_ID_PATTERN.test(body.suffix)
+        ? body.suffix
+        : null;
+    if (!roomId) {
+      return json({ error: "房间后缀需为 3 至 32 位字母、数字、- 或 _" }, 400);
     }
 
-    const collectionMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files$/);
-    if (collectionMatch) {
-      const roomId = collectionMatch[1];
-      if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
-      if (request.method !== "POST") return json({ error: "不支持的请求方法" }, 405);
-      const contentLength = contentLengthOf(request.headers);
-      if (contentLength === null) return json({ error: "上传请求缺少有效的文件大小" }, 411);
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    const response = await room.fetch("https://room.internal/initialize", { method: "POST" });
+    if (!response.ok) return withHeaders(response);
+    return json({ roomId }, 201);
+  }
 
-      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      const upload = fixedLengthBody(request.body, contentLength);
-      const headers = uploadHeaders(request.headers, contentLength);
-      headers.set("X-Clip-Room-Id", roomId);
+  const socketMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/ws$/);
+  if (socketMatch) {
+    const roomId = socketMatch[1];
+    if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+    if (
+      request.method !== "GET" ||
+      request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+    ) {
+      return json({ error: "需要 WebSocket 连接" }, 426);
+    }
+
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    return room.fetch(new Request("https://room.internal/websocket", {
+      headers: request.headers
+    }));
+  }
+
+  const collectionMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files$/);
+  if (collectionMatch) {
+    const roomId = collectionMatch[1];
+    if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+    if (request.method !== "POST") return json({ error: "不支持的请求方法" }, 405);
+    const contentLength = contentLengthOf(request.headers);
+    if (contentLength === null) return json({ error: "上传请求缺少有效的文件大小" }, 411);
+
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    const upload = fixedLengthBody(request.body, contentLength);
+    const headers = uploadHeaders(request.headers, contentLength);
+    headers.set("X-Clip-Room-Id", roomId);
+
+    try {
       const response = await room.fetch(new Request(`https://room.internal/files${url.search}`, {
         method: "POST",
         headers,
         body: upload.body
       }));
-      if (response.ok) await upload.finished;
+      await upload.finished;
       return withHeaders(response);
-    }
-
-    const fileMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files\/([A-Za-z0-9_-]+)$/);
-    if (fileMatch) {
-      const [, roomId, fileId] = fileMatch;
-      if (!ROOM_ID_PATTERN.test(roomId) || !FILE_ID_PATTERN.test(fileId)) {
-        return json({ error: "无效的文件地址" }, 400);
+    } catch (err) {
+      if (isConnectionLostError(err)) {
+        return new Response(null, { status: 499 });
       }
-      if (!["GET", "DELETE"].includes(request.method)) {
-        return json({ error: "不支持的请求方法" }, 405);
-      }
-      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}${url.search}`, {
-        method: request.method
-      })));
+      throw err;
     }
-
-    const roomMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)$/);
-    if (roomMatch) {
-      const roomId = roomMatch[1];
-      if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
-      if (!["GET", "PUT", "DELETE"].includes(request.method)) {
-        return json({ error: "不支持的请求方法" }, 405);
-      }
-
-      const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
-      const upstream = new Request("https://room.internal/state", {
-        method: request.method,
-        headers: request.method === "PUT" ? { "Content-Type": "application/json" } : undefined,
-        body: request.method === "PUT" ? await request.text() : undefined
-      });
-      return withHeaders(await room.fetch(upstream));
-    }
-
-    if (request.method === "GET") {
-      const fileBaseUrl = publicFileBaseUrl(env);
-      const fileOrigin = fileBaseUrl ? new URL(fileBaseUrl).origin : "";
-      const fileSource = fileOrigin ? ` ${fileOrigin}` : "";
-      return new Response(renderPage(fileBaseUrl), {
-        headers: {
-          "Content-Type": "text/html; charset=UTF-8",
-          "Cache-Control": "no-store",
-          "Content-Security-Policy": `default-src 'self'; connect-src 'self'; img-src 'self' blob:${fileSource}; media-src 'self' blob:${fileSource}; frame-src 'self'${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
-          "X-Content-Type-Options": "nosniff",
-          "Referrer-Policy": "no-referrer"
-        }
-      });
-    }
-
-    return json({ error: "未找到资源" }, 404);
   }
-};
+
+  const fileMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files\/([A-Za-z0-9_-]+)$/);
+  if (fileMatch) {
+    const [, roomId, fileId] = fileMatch;
+    if (!ROOM_ID_PATTERN.test(roomId) || !FILE_ID_PATTERN.test(fileId)) {
+      return json({ error: "无效的文件地址" }, 400);
+    }
+    if (!["GET", "DELETE"].includes(request.method)) {
+      return json({ error: "不支持的请求方法" }, 405);
+    }
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    return withHeaders(await room.fetch(new Request(`https://room.internal/files/${fileId}${url.search}`, {
+      method: request.method
+    })));
+  }
+
+  const roomMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)$/);
+  if (roomMatch) {
+    const roomId = roomMatch[1];
+    if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+    if (!["GET", "PUT", "DELETE"].includes(request.method)) {
+      return json({ error: "不支持的请求方法" }, 405);
+    }
+
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    const upstream = new Request("https://room.internal/state", {
+      method: request.method,
+      headers: request.method === "PUT" ? { "Content-Type": "application/json" } : undefined,
+      body: request.method === "PUT" ? await request.text() : undefined
+    });
+    return withHeaders(await room.fetch(upstream));
+  }
+
+  if (request.method === "GET") {
+    const fileBaseUrl = publicFileBaseUrl(env);
+    const fileOrigin = fileBaseUrl ? new URL(fileBaseUrl).origin : "";
+    const fileSource = fileOrigin ? ` ${fileOrigin}` : "";
+    return new Response(renderPage(fileBaseUrl), {
+      headers: {
+        "Content-Type": "text/html; charset=UTF-8",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": `default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:${fileSource}; media-src 'self' blob:${fileSource}; frame-src 'self'${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer"
+      }
+    });
+  }
+
+  return json({ error: "未找到资源" }, 404);
+}
 
 export class ClipRoom {
   constructor(state, env) {
@@ -133,6 +186,17 @@ export class ClipRoom {
   }
 
   async fetch(request) {
+    try {
+      return await this.dispatch(request);
+    } catch (err) {
+      if (isConnectionLostError(err)) {
+        return json({ error: "客户端中断上传" }, 499);
+      }
+      throw err;
+    }
+  }
+
+  async dispatch(request) {
     const url = new URL(request.url);
 
     if (url.pathname === "/initialize" && request.method === "POST") {
@@ -222,8 +286,8 @@ export class ClipRoom {
       return json({ error: "无效的房间地址" }, 400);
     }
 
-    const name = readFileName(new URL(request.url).searchParams.get("name"));
-    if (!name) return json({ error: "文件名无效" }, 400);
+    const rawName = readFileName(new URL(request.url).searchParams.get("name"));
+    if (!rawName) return json({ error: "文件名无效" }, 400);
     if (room.files.length >= MAX_FILES_PER_ROOM) {
       return json({ error: `每个房间最多上传 ${MAX_FILES_PER_ROOM} 个文件` }, 413);
     }
@@ -238,18 +302,27 @@ export class ClipRoom {
       return json({ error: "文件大小超出房间限制" }, 413);
     }
 
+    const name = getUniqueFileName(room.files, rawName);
     const fileId = createId(12);
+    const now = Date.now();
     const file = {
       id: fileId,
       name,
       size: contentLength,
-      type: normalizeContentType(request.headers.get("content-type")),
-      uploadedAt: Date.now(),
-      objectPath: fileObjectPath(roomId, fileId, name)
+      type: normalizeContentType(request.headers.get("content-type"), name),
+      uploadedAt: now,
+      objectPath: fileObjectPath(roomId, name, now)
     };
     const key = objectKey(this.env, file);
 
-    await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
+    try {
+      await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
+    } catch (err) {
+      if (isConnectionLostError(err)) {
+        return json({ error: "客户端中断上传" }, 499);
+      }
+      throw err;
+    }
 
     const updated = this.renewRoom({ ...room, files: [...room.files, file] });
     await this.saveRoom(updated);
@@ -283,6 +356,13 @@ export class ClipRoom {
 
     const file = room.files.find((item) => item.id === fileId);
     if (!file) return json({ error: "文件不存在或已删除" }, 404);
+
+    // Delete object from R2 storage
+    try {
+      if (this.files && typeof this.files.deleteObject === "function") {
+        await this.files.deleteObject(objectKey(this.env, file));
+      }
+    } catch {}
 
     const updated = this.renewRoom({
       ...room,
@@ -396,16 +476,38 @@ function requiredConfig(env, name) {
   return value.trim();
 }
 
+function formatDateFolder(timestamp = Date.now()) {
+  const d = new Date(timestamp + 8 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+function fileObjectPath(roomId, name, timestamp = Date.now()) {
+  const dateFolder = formatDateFolder(timestamp);
+  const safeName = name.replace(/[\\/]/g, "_");
+  return `${dateFolder}/${roomId}/${safeName}`;
+}
+
+function getUniqueFileName(existingFiles, originalName) {
+  const safeName = originalName.replace(/[\\/]/g, "_");
+  if (!existingFiles.some((f) => f.name === safeName)) {
+    return safeName;
+  }
+  const dotIdx = safeName.lastIndexOf(".");
+  const base = dotIdx !== -1 ? safeName.slice(0, dotIdx) : safeName;
+  const ext = dotIdx !== -1 ? safeName.slice(dotIdx) : "";
+  let counter = 1;
+  while (existingFiles.some((f) => f.name === `${base} (${counter})${ext}`)) {
+    counter++;
+  }
+  return `${base} (${counter})${ext}`;
+}
+
 function objectKey(env, file) {
   const prefix = typeof env.R2_PREFIX === "string" ? env.R2_PREFIX.trim().replace(/^\/+|\/+$/g, "") : "";
   const path = typeof file === "object" && file.objectPath
     ? file.objectPath
     : `files/${typeof file === "object" ? file.id : file}`;
   return prefix ? `${prefix}/${path}` : path;
-}
-
-function fileObjectPath(roomId, fileId, name) {
-  return `files/${roomId}/${fileId}-${name.replace(/[\\/]/g, "_")}`;
 }
 
 function publicFileBaseUrl(env) {
@@ -436,9 +538,22 @@ function readFileName(name) {
   return name.trim() || null;
 }
 
-function normalizeContentType(value) {
+function normalizeContentType(value, fileName = "") {
+  const ext = fileName && fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "";
+  if (ext === "apk") return "application/vnd.android.package-archive";
+  if (ext && KNOWN_MIME_TYPES[ext]) {
+    if (!value || value === "application/octet-stream") {
+      return KNOWN_MIME_TYPES[ext];
+    }
+  }
   const type = value?.split(";")[0].trim().toLowerCase();
-  return type && /^[!#$&^_.+\w-]+\/[!#$&^_.+\w-]+$/.test(type) ? type : "application/octet-stream";
+  if (type && /^[!#$&^_.+\w-]+\/[!#$&^_.+\w-]+$/.test(type)) {
+    return type;
+  }
+  if (ext && KNOWN_MIME_TYPES[ext]) {
+    return KNOWN_MIME_TYPES[ext];
+  }
+  return "application/octet-stream";
 }
 
 function contentLengthOf(headers) {
@@ -450,10 +565,30 @@ function contentLengthOf(headers) {
 
 function fixedLengthBody(body, contentLength) {
   const stream = new FixedLengthStream(contentLength);
+  const finished = body
+    ? body.pipeTo(stream.writable).catch((err) => err)
+    : stream.writable.getWriter().close().catch((err) => err);
+
   return {
     body: stream.readable,
-    finished: body ? body.pipeTo(stream.writable) : stream.writable.getWriter().close()
+    finished
   };
+}
+
+function isConnectionLostError(err) {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    err.name === "AbortError" ||
+    msg.includes("network connection lost") ||
+    msg.includes("connection lost") ||
+    msg.includes("client abort") ||
+    msg.includes("aborted") ||
+    msg.includes("premature close") ||
+    msg.includes("reset by peer") ||
+    msg.includes("broken pipe") ||
+    msg.includes("closed")
+  );
 }
 
 function publicRoom(room) {
@@ -474,7 +609,15 @@ function publicRoom(room) {
 
 function contentDisposition(file, download = false) {
   const inline = !download && isInlinePreviewableType(file.type);
-  return `${inline ? "inline" : "attachment"}; filename="download"; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+  const fallback = sanitizeAsciiFilename(file.name);
+  return `${inline ? "inline" : "attachment"}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+}
+
+function sanitizeAsciiFilename(name) {
+  const dotIdx = name.lastIndexOf(".");
+  const ext = dotIdx !== -1 ? name.slice(dotIdx).replace(/[^a-zA-Z0-9.]/g, "") : "";
+  const base = (dotIdx !== -1 ? name.slice(0, dotIdx) : name).replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 40);
+  return (base || "file") + ext;
 }
 
 function isInlinePreviewableType(type) {
