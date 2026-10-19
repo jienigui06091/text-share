@@ -1,8 +1,9 @@
 import { renderPage } from "./html.js";
 import { S3mini } from "s3mini";
+import QRCode from "qrcode";
 
-const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
-const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{16}$/;
+const ROOM_ID_PATTERN = /^([A-Za-z0-9_]|-){3,32}$/;
+const FILE_ID_PATTERN = /^([A-Za-z0-9_]|-){8,32}$/;
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_FILE_SIZE = 1024 * 1024 * 1024;
 const MAX_FILES_PER_ROOM = 30;
@@ -58,6 +59,32 @@ export default {
 
 async function handleRequest(request, env) {
   const url = new URL(request.url);
+
+  if (url.pathname === "/api/qr" && request.method === "GET") {
+    const text = url.searchParams.get("text") || url.searchParams.get("url");
+    if (!text || text.length > 2048) {
+      return json({ error: "参数 text 不能为空且长度不能超过 2048" }, 400);
+    }
+    try {
+      const svg = await QRCode.toString(text, {
+        type: "svg",
+        margin: 2,
+        errorCorrectionLevel: "M",
+        color: {
+          dark: "#0f172a",
+          light: "#ffffff"
+        }
+      });
+      return new Response(svg, {
+        headers: {
+          "Content-Type": "image/svg+xml; charset=UTF-8",
+          "Cache-Control": "public, max-age=3600"
+        }
+      });
+    } catch (err) {
+      return json({ error: "生成二维码失败: " + (err?.message || "未知错误") }, 500);
+    }
+  }
 
   if (url.pathname === "/api/rooms" && request.method === "POST") {
     let body = {};

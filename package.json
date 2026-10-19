@@ -7,12 +7,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
-    "check": "node --check src/index.js && node --check src/html.js"
+    "check": "node --check src/index.js && node --check src/html.js && node --input-type=module -e \"import('./src/html.js').then(({renderPage}) => renderPage().split('<script>').slice(1).map((part) => part.split('</script>')[0]).forEach((script) => new Function(script)));\""
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
   },
   "dependencies": {
+    "qrcode": "^1.5.4",
     "s3mini": "^1.0.0"
   }
 }

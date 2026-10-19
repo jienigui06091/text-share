@@ -3,7 +3,11 @@ main = "src/index.js"
 compatibility_date = "2026-08-18"
 
 [vars]
+R2_BUCKET = "cfbucket"
+R2_ENDPOINT_URL = "https://6a525f245a94916dedbd54339592abee.r2.cloudflarestorage.com"
+R2_PREFIX = "text-share"
 R2_PUBLIC_BASE_URL = "https://miaowazz.cc.cd/text-share"
+R2_REGION = "auto"
 
 [[durable_objects.bindings]]
 name = "CLIP_ROOM"

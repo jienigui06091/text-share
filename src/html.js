@@ -10,6 +10,19 @@ const page = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090d16">
   <title>Text Relay - 极速文本与文件中转站</title>
+  <script>
+    if (typeof window !== "undefined") {
+      if (!window.crypto) window.crypto = {};
+      if (typeof window.crypto.randomUUID !== "function") {
+        window.crypto.randomUUID = function() {
+          return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, function(c) {
+            var r = (window.crypto.getRandomValues ? window.crypto.getRandomValues(new Uint8Array(1))[0] : Math.floor(Math.random() * 256));
+            return (c ^ (r & 15 >> c / 4)).toString(16);
+          });
+        };
+      }
+    }
+  </script>
   <style>
     :root {
       color-scheme: light;
@@ -594,22 +607,88 @@ const page = `<!doctype html>
       text-align: center;
     }
     .qr-canvas-container {
-      width: 170px;
-      height: 170px;
+      width: 176px;
+      height: 176px;
       margin: 0 auto 12px;
-      padding: 8px;
+      padding: 6px;
       background: #ffffff;
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       display: grid;
       place-items: center;
       box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+    .qr-canvas-container img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
     }
     .qr-hint {
       font-size: 12px;
       color: var(--text-muted);
       line-height: 1.5;
       margin: 0;
+    }
+    .qr-lan-box {
+      font-size: 11px;
+      color: #92400e;
+      background: #fef3c7;
+      border: 1px solid #fde68a;
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      margin-top: 12px;
+      line-height: 1.45;
+      text-align: left;
+    }
+    .qr-lan-title {
+      font-weight: 700;
+      color: #78350f;
+      margin-bottom: 5px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .qr-lan-desc {
+      margin-bottom: 8px;
+      color: #92400e;
+      line-height: 1.4;
+    }
+    .qr-lan-row {
+      display: flex;
+      gap: 6px;
+    }
+    .qr-lan-input {
+      flex: 1;
+      height: 28px;
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid #d97706;
+      border-radius: 4px;
+      background: #ffffff;
+      color: #0f172a;
+      outline: none;
+      min-width: 0;
+    }
+    .qr-lan-input:focus {
+      border-color: #b45309;
+      box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.2);
+    }
+    .qr-lan-btn {
+      height: 28px;
+      padding: 0 10px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #d97706;
+      color: #ffffff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .qr-lan-btn:hover {
+      background: #b45309;
     }
 
     .room-info-box {
@@ -962,7 +1041,7 @@ const page = `<!doctype html>
             <label class="side-label" for="room-suffix">自定义房间后缀（可选）</label>
             <div class="input-prefix-group">
               <span class="input-prefix">/r/</span>
-              <input id="room-suffix" class="suffix-input" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]{3,32}" autocomplete="off" spellcheck="false" placeholder="例如：my-share">
+              <input id="room-suffix" class="suffix-input" type="text" minlength="3" maxlength="32" pattern="([A-Za-z0-9_]|-){3,32}" autocomplete="off" spellcheck="false" placeholder="例如：my-share">
             </div>
             <p class="field-hint">留空则自动生成高强度随机地址；支持字母、数字、- 和 _</p>
           </div>
@@ -999,7 +1078,7 @@ const page = `<!doctype html>
       const MAX_TOTAL_FILE_SIZE = 2048 * 1024 * 1024; // 2 GiB
       const MAX_FILES = 30;
       const MAX_TEXT_PREVIEW_SIZE = 2 * 1024 * 1024;
-      const ROOM_PATTERN = /^\\/r\\/([A-Za-z0-9_-]{3,32})\\/?$/;
+      const ROOM_PATTERN = /^\\/r\\/((?:[A-Za-z0-9_]|-){3,32})\\/?$/;
 
       const elements = {
         editor: document.querySelector("#editor"),
@@ -1098,6 +1177,74 @@ const page = `<!doctype html>
         elements.fileSizeTotal.textContent = "已用 " + formatSize(currentSize) + " / 2 GiB";
       }
 
+      function getEffectiveRoomUrl() {
+        if (!roomId) return "";
+        const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+        if (isLocal) {
+          const savedIp = localStorage.getItem("clip_lan_ip") || "";
+          if (savedIp) {
+            const port = window.location.port ? ":" + window.location.port : "";
+            return window.location.protocol + "//" + savedIp + port + "/r/" + roomId;
+          }
+        }
+        return window.location.href;
+      }
+
+      function renderQrCode(targetUrl) {
+        const url = "/api/qr?text=" + encodeURIComponent(targetUrl);
+        elements.qrContainer.innerHTML = '<img class="qr-image" src="' + url + '" alt="扫码直达本房间" width="160" height="160">';
+      }
+
+      function updateShareAndQr() {
+        const finalUrl = getEffectiveRoomUrl();
+        elements.shareLink.value = finalUrl;
+        renderQrCode(finalUrl);
+
+        const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+        let lanBox = elements.qrSection.querySelector(".qr-lan-box");
+
+        if (isLocal) {
+          if (!lanBox) {
+            lanBox = document.createElement("div");
+            lanBox.className = "qr-lan-box";
+            lanBox.innerHTML =
+              '<div class="qr-lan-title">' +
+                '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> ' +
+                '局域网手机扫码配置' +
+              '</div>' +
+              '<div class="qr-lan-desc">当前电脑使用 localhost，手机无法直接连通。输入电脑局域网 IP（在终端运行 <code>ipconfig</code> 查看），即可生成手机可扫的二维码：</div>' +
+              '<div class="qr-lan-row">' +
+                '<input type="text" id="qr-lan-ip" class="qr-lan-input" placeholder="例如 192.168.1.5">' +
+                '<button type="button" id="qr-lan-btn" class="qr-lan-btn">切换IP</button>' +
+              '</div>';
+            elements.qrSection.querySelector(".qr-box").append(lanBox);
+
+            const input = lanBox.querySelector("#qr-lan-ip");
+            const btn = lanBox.querySelector("#qr-lan-btn");
+            input.value = localStorage.getItem("clip_lan_ip") || "";
+
+            function applyLanIp() {
+              const val = input.value.trim().replace(/^https?:\\/\\//i, "").replace(/\\/.*$/, "").replace(/:.*$/, "");
+              if (val) {
+                localStorage.setItem("clip_lan_ip", val);
+                showToast("已将二维码切换为局域网 IP: " + val, "success");
+              } else {
+                localStorage.removeItem("clip_lan_ip");
+                showToast("已重置为默认地址", "info");
+              }
+              updateShareAndQr();
+            }
+
+            btn.addEventListener("click", applyLanIp);
+            input.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") applyLanIp();
+            });
+          }
+        } else if (lanBox) {
+          lanBox.remove();
+        }
+      }
+
       function setRoomUi(active) {
         elements.editor.disabled = !active;
         elements.clear.disabled = !active;
@@ -1106,217 +1253,13 @@ const page = `<!doctype html>
         elements.shareCopy.disabled = !active;
         elements.fileInput.disabled = !active;
         elements.fileDropzone.classList.toggle("disabled", !active);
-        elements.shareLink.value = active ? window.location.href : "创建房间后显示链接";
         elements.qrSection.hidden = !active;
+
         if (active) {
-          renderQrCode(window.location.href);
+          updateShareAndQr();
+        } else {
+          elements.shareLink.value = "创建房间后显示链接";
         }
-      }
-
-      // Compact QR Code Generator
-      function renderQrCode(url) {
-        try {
-          const svg = generateQrSvg(url);
-          elements.qrContainer.innerHTML = svg;
-        } catch (e) {
-          elements.qrContainer.textContent = "二维码生成失败";
-        }
-      }
-
-      function generateQrSvg(text) {
-        const GF256_EXP = new Uint8Array(512);
-        const GF256_LOG = new Uint8Array(256);
-        let x = 1;
-        for (let i = 0; i < 255; i++) {
-          GF256_EXP[i] = x;
-          GF256_EXP[i + 255] = x;
-          GF256_LOG[x] = i;
-          x = (x << 1) ^ (x & 128 ? 0x11d : 0);
-        }
-        function gfMul(a, b) {
-          return a === 0 || b === 0 ? 0 : GF256_EXP[GF256_LOG[a] + GF256_LOG[b]];
-        }
-        function rsGenPoly(degree) {
-          let poly = [1];
-          for (let i = 0; i < degree; i++) {
-            const next = new Array(poly.length + 1).fill(0);
-            for (let j = 0; j < poly.length; j++) {
-              next[j] ^= gfMul(poly[j], GF256_EXP[i]);
-              next[j + 1] ^= poly[j];
-            }
-            poly = next;
-          }
-          return poly;
-        }
-        function rsCompute(data, eccCount) {
-          const gen = rsGenPoly(eccCount);
-          const res = new Array(eccCount).fill(0);
-          for (const b of data) {
-            const factor = b ^ res.shift();
-            res.push(0);
-            for (let i = 0; i < eccCount; i++) {
-              res[i] ^= gfMul(gen[i], factor);
-            }
-          }
-          return res;
-        }
-        const VERSION_SPECS = [
-          null,
-          [1, 21, 26, 19, 7, 1],
-          [2, 25, 44, 34, 10, 1],
-          [3, 29, 70, 55, 15, 1],
-          [4, 33, 100, 80, 20, 1],
-          [5, 37, 134, 108, 26, 1],
-          [6, 41, 172, 136, 18, 2],
-          [7, 45, 196, 156, 20, 2],
-          [8, 49, 242, 194, 24, 2],
-          [9, 53, 292, 232, 30, 2],
-          [10, 57, 346, 274, 18, 4]
-        ];
-        const ALIGN_COORDS = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
-        const rawBytes = new TextEncoder().encode(text);
-        let spec = null, version = 1;
-        for (let v = 1; v <= 10; v++) {
-          const s = VERSION_SPECS[v];
-          const headerBits = v < 10 ? 12 : 20;
-          if (Math.ceil((headerBits + rawBytes.length * 8) / 8) <= s[3]) {
-            spec = s;
-            version = v;
-            break;
-          }
-        }
-        if (!spec) spec = VERSION_SPECS[10];
-        const size = spec[1], dataCodewords = spec[3], eccPerBlock = spec[4], numBlocks = spec[5];
-        const bits = [];
-        function pushBits(val, len) {
-          for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1);
-        }
-        pushBits(0b0100, 4);
-        pushBits(rawBytes.length, version < 10 ? 8 : 16);
-        for (const b of rawBytes) pushBits(b, 8);
-        const remainingBits = dataCodewords * 8 - bits.length;
-        pushBits(0, Math.min(4, Math.max(0, remainingBits)));
-        while (bits.length % 8 !== 0) bits.push(0);
-        const padBytes = [0xec, 0x11];
-        let padIdx = 0;
-        while (bits.length < dataCodewords * 8) {
-          pushBits(padBytes[padIdx % 2], 8);
-          padIdx++;
-        }
-        const dataBytes = [];
-        for (let i = 0; i < bits.length; i += 8) {
-          let b = 0;
-          for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
-          dataBytes.push(b);
-        }
-        const blockDataLen = Math.floor(dataCodewords / numBlocks);
-        const shortBlocks = numBlocks - (dataCodewords % numBlocks);
-        const blocks = [];
-        let offset = 0;
-        for (let b = 0; b < numBlocks; b++) {
-          const len = b < shortBlocks ? blockDataLen : blockDataLen + 1;
-          const d = dataBytes.slice(offset, offset + len);
-          offset += len;
-          blocks.push({ data: d, ecc: rsCompute(d, eccPerBlock) });
-        }
-        const finalCodewords = [];
-        const maxDataBlockLen = Math.max(...blocks.map(b => b.data.length));
-        for (let i = 0; i < maxDataBlockLen; i++) {
-          for (let b = 0; b < numBlocks; b++) {
-            if (i < blocks[b].data.length) finalCodewords.push(blocks[b].data[i]);
-          }
-        }
-        for (let i = 0; i < eccPerBlock; i++) {
-          for (let b = 0; b < numBlocks; b++) finalCodewords.push(blocks[b].ecc[i]);
-        }
-        const matrix = Array.from({ length: size }, () => new Array(size).fill(null));
-        const isReserved = Array.from({ length: size }, () => new Array(size).fill(false));
-        function setModule(r, c, val, reserved = true) {
-          if (r >= 0 && r < size && c >= 0 && c < size) {
-            matrix[r][c] = val ? 1 : 0;
-            if (reserved) isReserved[r][c] = true;
-          }
-        }
-        function addFinder(top, left) {
-          for (let r = -1; r <= 7; r++) {
-            for (let c = -1; c <= 7; c++) {
-              const row = top + r, col = left + c;
-              if (row < 0 || row >= size || col < 0 || col >= size) continue;
-              if (r >= 0 && r <= 6 && c >= 0 && c <= 6) {
-                setModule(row, col, r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4));
-              } else {
-                setModule(row, col, false);
-              }
-            }
-          }
-        }
-        addFinder(0, 0);
-        addFinder(0, size - 7);
-        addFinder(size - 7, 0);
-        for (let i = 8; i < size - 8; i++) {
-          setModule(6, i, i % 2 === 0);
-          setModule(i, 6, i % 2 === 0);
-        }
-        const alignCoords = ALIGN_COORDS[version] || [];
-        for (const r of alignCoords) {
-          for (const c of alignCoords) {
-            if (isReserved[r][c]) continue;
-            for (let dr = -2; dr <= 2; dr++) {
-              for (let dc = -2; dc <= 2; dc++) {
-                setModule(r + dr, c + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
-              }
-            }
-          }
-        }
-        setModule(size - 8, 8, true);
-        for (let i = 0; i < 9; i++) {
-          if (i !== 6) { setModule(8, i, 0); setModule(i, 8, 0); }
-        }
-        for (let i = 0; i < 8; i++) {
-          setModule(8, size - 1 - i, 0);
-          setModule(size - 1 - i, 8, 0);
-        }
-        const dataBitList = [];
-        for (const cw of finalCodewords) {
-          for (let i = 7; i >= 0; i--) dataBitList.push((cw >> i) & 1);
-        }
-        let bitIdx = 0, upwards = true;
-        for (let right = size - 1; right > 0; right -= 2) {
-          if (right === 6) right--;
-          const rows = [];
-          for (let r = 0; r < size; r++) rows.push(upwards ? size - 1 - r : r);
-          upwards = !upwards;
-          for (const r of rows) {
-            for (const c of [right, right - 1]) {
-              if (!isReserved[r][c]) {
-                matrix[r][c] = bitIdx < dataBitList.length ? dataBitList[bitIdx++] : 0;
-              }
-            }
-          }
-        }
-        for (let r = 0; r < size; r++) {
-          for (let c = 0; c < size; c++) {
-            if (!isReserved[r][c] && (r + c) % 2 === 0) matrix[r][c] ^= 1;
-          }
-        }
-        const formatBits = [0,1,0,0,0,1,1,1,1,0,1,0,1,1,0];
-        const formatPositions1 = [[8,0],[8,1],[8,2],[8,3],[8,4],[8,5],[8,7],[8,8],[7,8],[5,8],[4,8],[3,8],[2,8],[1,8],[0,8]];
-        const formatPositions2 = [[size-1,8],[size-2,8],[size-3,8],[size-4,8],[size-5,8],[size-6,8],[size-7,8],[8,size-8],[8,size-7],[8,size-6],[8,size-5],[8,size-4],[8,size-3],[8,size-2],[8,size-1]];
-        for (let i = 0; i < 15; i++) {
-          matrix[formatPositions1[i][0]][formatPositions1[i][1]] = formatBits[i];
-          matrix[formatPositions2[i][0]][formatPositions2[i][1]] = formatBits[i];
-        }
-        const margin = 4, cellSize = 6;
-        const totalSize = (size + margin * 2) * cellSize;
-        let rects = "";
-        for (let r = 0; r < size; r++) {
-          for (let c = 0; c < size; c++) {
-            if (matrix[r][c] === 1) {
-              rects += '<rect x="' + ((c + margin) * cellSize) + '" y="' + ((r + margin) * cellSize) + '" width="' + cellSize + '" height="' + cellSize + '" fill="#0f172a"/>';
-            }
-          }
-        }
-        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + totalSize + ' ' + totalSize + '" width="100%" height="100%" style="display:block;">' + rects + '</svg>';
       }
 
       function applyRoom(room, syncText = true) {
@@ -1346,7 +1289,7 @@ const page = `<!doctype html>
 
       async function createRoom() {
         const suffix = elements.roomSuffix.value.trim();
-        if (suffix && !/^[A-Za-z0-9_-]{3,32}$/.test(suffix)) {
+        if (suffix && !/^([A-Za-z0-9_]|-){3,32}$/.test(suffix)) {
           showToast("后缀需为 3 至 32 位字母、数字、- 或 _", "error");
           elements.roomSuffix.focus();
           return;
@@ -1358,6 +1301,7 @@ const page = `<!doctype html>
         try {
           const room = await request("/api/rooms", {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ suffix })
           });
           window.location.assign("/r/" + room.roomId);
@@ -1508,7 +1452,7 @@ const page = `<!doctype html>
           const meta = document.createElement("div");
           meta.className = "file-meta";
           const label = fileLabel(file);
-          const isApk = file.name.match(/\\.apk$/i) || file.type === "application/vnd.android.package-archive";
+          const isApk = file.name.match(/\.apk$/i) || file.type === "application/vnd.android.package-archive";
           meta.innerHTML = '<span class="file-tag ' + (isApk ? "apk" : "") + '">' + label + '</span><span>' + formatSize(file.size) + '</span>';
 
           details.append(name, meta);
@@ -1590,7 +1534,7 @@ const page = `<!doctype html>
           return box;
         }
 
-        const isApk = file.name.match(/\\.apk$/i) || file.type === "application/vnd.android.package-archive";
+        const isApk = file.name.match(/\.apk$/i) || file.type === "application/vnd.android.package-archive";
         const badge = document.createElement("div");
         badge.className = "file-type-badge " + (isApk ? "apk" : fileTypeCategory(file));
 
@@ -1606,8 +1550,8 @@ const page = `<!doctype html>
       function fileTypeCategory(file) {
         if (file.type.startsWith("video/")) return "video";
         if (file.type.startsWith("audio/")) return "audio";
-        if (file.type.includes("zip") || file.name.match(/\\.(zip|rar|7z|tar|gz)$/i)) return "archive";
-        if (file.type === "application/pdf" || file.name.match(/\\.pdf$/i)) return "doc";
+        if (file.type.includes("zip") || file.name.match(/\.(zip|rar|7z|tar|gz)$/i)) return "archive";
+        if (file.type === "application/pdf" || file.name.match(/\.pdf$/i)) return "doc";
         return "";
       }
 
@@ -1906,12 +1850,12 @@ const page = `<!doctype html>
       }
 
       function fileLabel(file) {
-        if (file.name.match(/\\.apk$/i) || file.type === "application/vnd.android.package-archive") return "Android 安装包";
+        if (file.name.match(/\.apk$/i) || file.type === "application/vnd.android.package-archive") return "Android 安装包";
         if (file.type.startsWith("image/")) return "图片";
         if (file.type.startsWith("video/")) return "视频";
         if (file.type.startsWith("audio/")) return "音频";
-        if (file.type === "application/pdf" || file.name.match(/\\.pdf$/i)) return "PDF 文档";
-        if (file.type.includes("zip") || file.name.match(/\\.(zip|rar|7z|tar|gz)$/i)) return "压缩包";
+        if (file.type === "application/pdf" || file.name.match(/\.pdf$/i)) return "PDF 文档";
+        if (file.type.includes("zip") || file.name.match(/\.(zip|rar|7z|tar|gz)$/i)) return "压缩包";
         return "文件";
       }
 
