@@ -1160,11 +1160,13 @@ const page = `<!doctype html>
         return "/api/rooms/" + roomId + "/files/" + file.id + "?download=1";
       }
 
-      function setStatus(message, isOnline = false) {
+      function setStatus(message, isOnline) {
         const span = elements.status.querySelector("span") || elements.status;
         span.textContent = message;
-        elements.connectionText.textContent = isOnline ? "已连接 · 实时同步" : "未连接";
-        elements.connection.classList.toggle("online", isOnline);
+        if (typeof isOnline === "boolean") {
+          elements.connectionText.textContent = isOnline ? "已连接 · 实时同步" : "未连接";
+          elements.connection.classList.toggle("online", isOnline);
+        }
       }
 
       function updateCount() {
@@ -1318,7 +1320,7 @@ const page = `<!doctype html>
         try {
           const room = await request("/api/rooms/" + roomId);
           applyRoom(room);
-          setStatus("实时同步已开启", true);
+          setStatus("实时同步已开启");
         } catch (error) {
           if (error.message === "房间不存在或已过期") {
             disconnectRoom();
@@ -1341,7 +1343,7 @@ const page = `<!doctype html>
           });
           hasLocalEdits = false;
           applyRoom(room, false);
-          setStatus("已自动保存同步", true);
+          setStatus("已自动保存同步");
         } catch (error) {
           setStatus(error.message || "保存失败");
           showToast(error.message || "保存失败", "error");
@@ -1387,12 +1389,12 @@ const page = `<!doctype html>
             return;
           }
           if (!roomId) return;
-          setStatus("连接中断，正在重连...");
+          setStatus("连接中断，正在重连...", false);
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connectRoom, 2000);
         });
         roomSocket.addEventListener("error", () => {
-          setStatus("连接出现异常，准备重连...");
+          setStatus("连接出现异常，准备重连...", false);
         });
       }
 
@@ -1400,7 +1402,7 @@ const page = `<!doctype html>
         disconnectRoom();
         setRoomUi(false);
         elements.roomNote.textContent = "该房间已过期或已被删除。请创建一个新的临时房间。";
-        setStatus("房间已过期");
+        setStatus("房间已过期", false);
         showToast("房间已过期或已被删除", "error");
       }
 
@@ -1795,7 +1797,7 @@ const page = `<!doctype html>
               if (pending.aborted) cancel();
             });
             if (room) applyRoom(room, false);
-            setStatus(file.name + " 已上传", true);
+            setStatus(file.name + " 已上传");
             showToast("✓ " + file.name + " 上传成功", "success");
           } catch (error) {
             if (error.name === "AbortError" || pending.aborted) {
@@ -1818,7 +1820,7 @@ const page = `<!doctype html>
         try {
           const room = await request("/api/rooms/" + roomId + "/files/" + file.id, { method: "DELETE" });
           applyRoom(room, false);
-          setStatus("文件已删除", true);
+          setStatus("文件已删除");
           showToast("文件“" + file.name + "”已删除");
         } catch (error) {
           setStatus(error.message || "删除文件失败");
@@ -1881,7 +1883,7 @@ const page = `<!doctype html>
           fallback.remove();
         }
         showToast("✓ " + label, "success");
-        setStatus(label, true);
+        setStatus(label);
       }
 
       function exportTextToFile() {

@@ -48,9 +48,6 @@ export default {
     try {
       return await handleRequest(request, env);
     } catch (err) {
-      if (isConnectionLostError(err)) {
-        return new Response(null, { status: 499 });
-      }
       console.error("[Worker Error]", err);
       return json({ error: "服务处理异常: " + (err?.message || "未知错误") }, 500);
     }
@@ -139,20 +136,15 @@ async function handleRequest(request, env) {
     const headers = uploadHeaders(request.headers, contentLength);
     headers.set("X-Clip-Room-Id", roomId);
 
-    try {
-      const response = await room.fetch(new Request(`https://room.internal/files${url.search}`, {
+    const [response] = await Promise.all([
+      room.fetch(new Request(`https://room.internal/files${url.search}`, {
         method: "POST",
         headers,
         body: upload.body
-      }));
-      await upload.finished;
-      return withHeaders(response);
-    } catch (err) {
-      if (isConnectionLostError(err)) {
-        return new Response(null, { status: 499 });
-      }
-      throw err;
-    }
+      })),
+      upload.finished
+    ]);
+    return withHeaders(response);
   }
 
   const fileMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files\/([A-Za-z0-9_-]+)$/);
@@ -213,14 +205,7 @@ export class ClipRoom {
   }
 
   async fetch(request) {
-    try {
-      return await this.dispatch(request);
-    } catch (err) {
-      if (isConnectionLostError(err)) {
-        return json({ error: "客户端中断上传" }, 499);
-      }
-      throw err;
-    }
+    return this.dispatch(request);
   }
 
   async dispatch(request) {
@@ -342,14 +327,7 @@ export class ClipRoom {
     };
     const key = objectKey(this.env, file);
 
-    try {
-      await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
-    } catch (err) {
-      if (isConnectionLostError(err)) {
-        return json({ error: "客户端中断上传" }, 499);
-      }
-      throw err;
-    }
+    await this.files.putAnyObject(key, request.body, file.type, undefined, undefined, contentLength);
 
     const updated = this.renewRoom({ ...room, files: [...room.files, file] });
     await this.saveRoom(updated);
@@ -593,8 +571,8 @@ function contentLengthOf(headers) {
 function fixedLengthBody(body, contentLength) {
   const stream = new FixedLengthStream(contentLength);
   const finished = body
-    ? body.pipeTo(stream.writable).catch((err) => err)
-    : stream.writable.getWriter().close().catch((err) => err);
+    ? body.pipeTo(stream.writable)
+    : stream.writable.getWriter().close();
 
   return {
     body: stream.readable,
@@ -602,21 +580,6 @@ function fixedLengthBody(body, contentLength) {
   };
 }
 
-function isConnectionLostError(err) {
-  if (!err) return false;
-  const msg = (err.message || String(err)).toLowerCase();
-  return (
-    err.name === "AbortError" ||
-    msg.includes("network connection lost") ||
-    msg.includes("connection lost") ||
-    msg.includes("client abort") ||
-    msg.includes("aborted") ||
-    msg.includes("premature close") ||
-    msg.includes("reset by peer") ||
-    msg.includes("broken pipe") ||
-    msg.includes("closed")
-  );
-}
 
 function publicRoom(room) {
   return {
