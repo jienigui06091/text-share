@@ -123,6 +123,36 @@ async function handleRequest(request, env) {
     }));
   }
 
+  const presignMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files\/presign$/);
+  if (presignMatch) {
+    const roomId = presignMatch[1];
+    if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+    if (request.method !== "POST") return json({ error: "不支持的请求方法" }, 405);
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    const headers = new Headers(request.headers);
+    headers.set("X-Clip-Room-Id", roomId);
+    return withHeaders(await room.fetch(new Request("https://room.internal/files/presign", {
+      method: "POST",
+      headers,
+      body: await request.text()
+    })));
+  }
+
+  const completeMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files\/complete$/);
+  if (completeMatch) {
+    const roomId = completeMatch[1];
+    if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "无效的房间地址" }, 400);
+    if (request.method !== "POST") return json({ error: "不支持的请求方法" }, 405);
+    const room = env.CLIP_ROOM.get(env.CLIP_ROOM.idFromName(roomId));
+    const headers = new Headers(request.headers);
+    headers.set("X-Clip-Room-Id", roomId);
+    return withHeaders(await room.fetch(new Request("https://room.internal/files/complete", {
+      method: "POST",
+      headers,
+      body: await request.text()
+    })));
+  }
+
   const collectionMatch = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9_-]+)\/files$/);
   if (collectionMatch) {
     const roomId = collectionMatch[1];
@@ -183,11 +213,20 @@ async function handleRequest(request, env) {
     const fileBaseUrl = publicFileBaseUrl(env);
     const fileOrigin = fileBaseUrl ? new URL(fileBaseUrl).origin : "";
     const fileSource = fileOrigin ? ` ${fileOrigin}` : "";
+
+    let r2Origin = "";
+    try {
+      if (env.R2_ENDPOINT_URL) {
+        r2Origin = new URL(env.R2_ENDPOINT_URL).origin;
+      }
+    } catch {}
+    const r2Source = r2Origin ? ` ${r2Origin}` : " https://*.r2.cloudflarestorage.com";
+
     return new Response(renderPage(fileBaseUrl), {
       headers: {
         "Content-Type": "text/html; charset=UTF-8",
         "Cache-Control": "no-store",
-        "Content-Security-Policy": `default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:${fileSource}; media-src 'self' blob:${fileSource}; frame-src 'self'${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
+        "Content-Security-Policy": `default-src 'self'; connect-src 'self' ws: wss:${fileSource}${r2Source}; img-src 'self' data: blob:${fileSource}; media-src 'self' blob:${fileSource}; frame-src 'self'${fileSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer"
       }
@@ -238,6 +277,14 @@ export class ClipRoom {
 
     if (url.pathname === "/state") return this.handleState(request);
 
+    if (url.pathname === "/files/presign" && request.method === "POST") {
+      return this.presignUpload(request);
+    }
+
+    if (url.pathname === "/files/complete" && request.method === "POST") {
+      return this.completeUpload(request);
+    }
+
     if (url.pathname === "/files" && request.method === "POST") {
       return this.uploadFile(request);
     }
@@ -287,6 +334,103 @@ export class ClipRoom {
     }
 
     return json({ error: "不支持的请求方法" }, 405);
+  }
+
+  async presignUpload(request) {
+    const room = await this.readActiveRoom();
+    if (!room) return json({ error: "房间不存在或已过期" }, 404);
+
+    const roomId = request.headers.get("X-Clip-Room-Id");
+    if (!roomId || !ROOM_ID_PATTERN.test(roomId)) {
+      return json({ error: "无效的房间地址" }, 400);
+    }
+
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "请求内容必须是 JSON" }, 400);
+    }
+
+    const rawName = readFileName(body?.name);
+    if (!rawName) return json({ error: "文件名无效" }, 400);
+
+    const size = Number(body?.size);
+    if (!Number.isSafeInteger(size) || size <= 0) {
+      return json({ error: "文件大小无效" }, 400);
+    }
+
+    if (room.files.length >= MAX_FILES_PER_ROOM) {
+      return json({ error: `每个房间最多上传 ${MAX_FILES_PER_ROOM} 个文件` }, 413);
+    }
+
+    const currentSize = room.files.reduce((total, file) => total + file.size, 0);
+    const remainingSize = MAX_TOTAL_FILE_SIZE - currentSize;
+    if (remainingSize <= 0) return json({ error: "房间文件总大小已达上限" }, 413);
+
+    if (size > Math.min(MAX_FILE_SIZE, remainingSize)) {
+      return json({ error: "文件大小超出房间限制" }, 413);
+    }
+
+    const name = getUniqueFileName(room.files, rawName);
+    const fileId = createId(12);
+    const now = Date.now();
+    const type = normalizeContentType(body?.type, name);
+    const file = {
+      id: fileId,
+      name,
+      size,
+      type,
+      uploadedAt: now,
+      objectPath: fileObjectPath(roomId, name, now)
+    };
+    const key = objectKey(this.env, file);
+
+    const uploadUrl = await this.files.getPresignedUrl("PUT", key, 3600, {}, {
+      "Content-Type": type
+    });
+
+    return json({ uploadUrl, file }, 200);
+  }
+
+  async completeUpload(request) {
+    const room = await this.readActiveRoom();
+    if (!room) return json({ error: "房间不存在或已过期" }, 404);
+
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "请求内容必须是 JSON" }, 400);
+    }
+
+    const incoming = body?.file;
+    if (!incoming || !incoming.id || !incoming.name || !incoming.size || !incoming.objectPath) {
+      return json({ error: "缺少必要的文件信息" }, 400);
+    }
+
+    if (room.files.some((f) => f.id === incoming.id)) {
+      return json(publicRoom(room), 200);
+    }
+
+    if (room.files.length >= MAX_FILES_PER_ROOM) {
+      return json({ error: `每个房间最多上传 ${MAX_FILES_PER_ROOM} 个文件` }, 413);
+    }
+
+    const file = {
+      id: String(incoming.id),
+      name: String(incoming.name),
+      size: Number(incoming.size),
+      type: normalizeContentType(incoming.type, incoming.name),
+      uploadedAt: Number(incoming.uploadedAt) || Date.now(),
+      objectPath: String(incoming.objectPath)
+    };
+
+    const updated = this.renewRoom({ ...room, files: [...room.files, file] });
+    await this.saveRoom(updated);
+
+    this.broadcast({ type: "room", room: publicRoom(updated) });
+    return json(publicRoom(updated), 201);
   }
 
   async uploadFile(request) {

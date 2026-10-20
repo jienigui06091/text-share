@@ -1660,30 +1660,70 @@ const page = `<!doctype html>
         return map[ext] || "application/octet-stream";
       }
 
-      function uploadWithXhr(file, contentType, onProgress, setCancel) {
-        return new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          let isAborted = false;
+      async function uploadWithXhr(file, contentType, onProgress, setCancel) {
+        let currentAbort = null;
+        let isAborted = false;
 
-          function handleAbort() {
-            if (isAborted) return;
-            isAborted = true;
+        function abort() {
+          if (isAborted) return;
+          isAborted = true;
+          if (currentAbort) {
+            try { currentAbort(); } catch {}
+          }
+        }
+
+        if (setCancel) {
+          setCancel(() => {
+            abort();
+          });
+        }
+
+        // 第 1 步：向服务端获取预签名直传地址
+        const presignRes = await fetch("/api/rooms/" + roomId + "/files/presign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: file.name,
+            size: file.size,
+            type: contentType
+          })
+        });
+
+        if (isAborted) {
+          const err = new Error("上传已取消");
+          err.name = "AbortError";
+          throw err;
+        }
+
+        if (!presignRes.ok) {
+          let errMsg = "获取上传授权失败 (状态码 " + presignRes.status + ")";
+          try {
+            const errJson = await presignRes.json();
+            if (errJson?.error) errMsg = errJson.error;
+          } catch {}
+          throw new Error(errMsg);
+        }
+
+        const { uploadUrl, file: fileMeta } = await presignRes.json();
+
+        // 第 2 步：浏览器直接 PUT 到 R2（绕过 100MB 限制并显示上传进度）
+        await new Promise((resolve, reject) => {
+          if (isAborted) {
+            const err = new Error("上传已取消");
+            err.name = "AbortError";
+            return reject(err);
+          }
+
+          const xhr = new XMLHttpRequest();
+          currentAbort = () => {
+            try { xhr.abort(); } catch {}
             const err = new Error("上传已取消");
             err.name = "AbortError";
             reject(err);
-          }
+          };
 
-          if (setCancel) {
-            setCancel(() => {
-              handleAbort();
-              try {
-                xhr.abort();
-              } catch {}
-            });
-          }
-
-          xhr.open("POST", "/api/rooms/" + roomId + "/files?name=" + encodeURIComponent(file.name));
-          xhr.setRequestHeader("Content-Type", contentType);
+          xhr.open("PUT", uploadUrl);
+          xhr.setRequestHeader("Content-Type", fileMeta.type || contentType);
 
           xhr.upload.onprogress = (event) => {
             if (isAborted) return;
@@ -1696,37 +1736,51 @@ const page = `<!doctype html>
           xhr.onload = () => {
             if (isAborted) return;
             if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                resolve(JSON.parse(xhr.responseText));
-              } catch {
-                resolve(null);
-              }
-            } else if (xhr.status === 499) {
-              handleAbort();
+              resolve();
+            } else if (xhr.status === 403) {
+              reject(new Error("直传存储失败 (403 权限异常，请确认 R2 跨域或密钥配置)"));
             } else {
-              try {
-                const body = JSON.parse(xhr.responseText);
-                reject(new Error(body.error || "上传失败 (状态码 " + xhr.status + ")"));
-              } catch {
-                reject(new Error("上传失败 (状态码 " + xhr.status + ")"));
-              }
+              reject(new Error("直传存储失败 (状态码 " + xhr.status + ")"));
             }
           };
 
           xhr.onabort = () => {
-            handleAbort();
+            const err = new Error("上传已取消");
+            err.name = "AbortError";
+            reject(err);
           };
 
           xhr.onerror = () => {
-            if (isAborted) {
-              handleAbort();
-              return;
-            }
-            reject(new Error("网络异常，上传失败"));
+            if (isAborted) return;
+            reject(new Error("网络异常，直传存储失败（请确认 R2 存储桶已开启 CORS 策略）"));
           };
 
           xhr.send(file);
         });
+
+        if (isAborted) {
+          const err = new Error("上传已取消");
+          err.name = "AbortError";
+          throw err;
+        }
+
+        // 第 3 步：直传成功后通知房间记录元数据并实时同步
+        const completeRes = await fetch("/api/rooms/" + roomId + "/files/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file: fileMeta })
+        });
+
+        if (!completeRes.ok) {
+          let errMsg = "保存文件记录失败 (状态码 " + completeRes.status + ")";
+          try {
+            const errJson = await completeRes.json();
+            if (errJson?.error) errMsg = errJson.error;
+          } catch {}
+          throw new Error(errMsg);
+        }
+
+        return await completeRes.json();
       }
 
       async function selectFiles(selected) {
